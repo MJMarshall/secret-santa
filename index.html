@@ -108,6 +108,11 @@
   .result .actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .result .actions button { flex: 1 1 auto; }
   .sent { color: var(--green); font-size: 0.85rem; font-weight: 500; }
+  .result .name .right { display: flex; align-items: center; gap: 10px; }
+  .tag { font-size: 1.4rem; line-height: 1; }
+  .check { border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; font-size: 0.9rem; }
+  .check.ok { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
+  .check.bad { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
   details summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; min-height: 32px; }
   .hidden { display: none !important; }
 
@@ -212,6 +217,8 @@
       <div class="card">
         <h2>Send each person their link</h2>
         <p class="note">Each link shows only that person's match. The buttons copy or share it without showing the match to you.</p>
+        <div id="check" class="check" role="status"></div>
+        <p class="note">The symbol by each name stands for who they're buying for, without saying who. Every symbol should be different.</p>
         <div id="resultList"></div>
       </div>
       <div class="row" style="gap:8px">
@@ -440,6 +447,7 @@
     if (state.message.trim()) extras.m = state.message.trim();
 
     const base = location.origin + location.pathname;
+    state.tagOrder = null; // new symbols for each draw
     state.draw = people.map((p, g) => ({
       name: p.name,
       email: p.email,
@@ -457,15 +465,63 @@
     if (tag) tag.textContent = "✓ Sent";
   }
 
+  // ---------- Independent check of the links themselves ----------
+  const SYMBOLS = ["🦌","⛄","🎄","🔔","⭐","🍪","🧦","🕯️","🦉","🐧","🦊","🍊","❄️","🎀","🧤","🍫","🐻","🍄","🦔","🌲","🐿️","🍒","🌙","🎈","🐢","🍋","🐝","🌻","🐳","🍩","🚂","🎺","🪁","🐙","🍉","🦋","🌈","🐞","🍐","🛷"];
+
+  function checkLinks() {
+    const givers = state.draw.map((d) => d.name);
+    const recips = [];
+    for (const d of state.draw) {
+      try { recips.push(decodePayload(d.link.split("#")[1]).n); }
+      catch (e) { return { ok: false, msg: "The link for " + d.name + " couldn't be read. Tap “Draw again”.", recips: null }; }
+    }
+    const lower = (s) => s.toLowerCase();
+    const distinct = new Set(recips.map(lower));
+    const giverSet = new Set(givers.map(lower));
+    const blocked = new Set(state.exclusions.map(([a, b]) => lower(a) + "\u0000" + lower(b)));
+    const problems = [];
+    if (distinct.size !== recips.length) problems.push("someone was drawn more than once");
+    if (recips.some((r, i) => lower(r) === lower(givers[i]))) problems.push("someone drew themselves");
+    if (recips.some((r) => !giverSet.has(lower(r)))) problems.push("a link names someone who isn't in the group");
+    if (recips.some((r, i) => blocked.has(lower(givers[i]) + "\u0000" + lower(r)) || blocked.has(lower(r) + "\u0000" + lower(givers[i]))))
+      problems.push("an excluded pair drew each other");
+    if (problems.length) return { ok: false, msg: "Problem: " + problems.join("; ") + ". Tap “Draw again”.", recips };
+    return { ok: true, msg: "✓ Checked all " + recips.length + " links: everyone is buying for a different person, nobody has themselves" +
+      (state.exclusions.length ? ", and every exclusion is respected." : "."), recips };
+  }
+
+  function symbolsFor(recips) {
+    // Random symbol per recipient, fixed for this draw so it doesn't change on refresh.
+    const n = SYMBOLS.length;
+    if (!Array.isArray(state.tagOrder) || state.tagOrder.length !== n) {
+      const order = [...Array(n).keys()];
+      for (let i = n - 1; i > 0; i--) { const j = randInt(i + 1); [order[i], order[j]] = [order[j], order[i]]; }
+      state.tagOrder = order;
+      save();
+    }
+    const unique = [...new Set(recips.map((r) => r.toLowerCase()))].sort();
+    return recips.map((r) => {
+      const k = unique.indexOf(r.toLowerCase());
+      return k < n ? SYMBOLS[state.tagOrder[k]] : "#" + (k + 1);
+    });
+  }
+
   function showResults() {
     $("setup").classList.add("hidden");
     $("results").classList.remove("hidden");
+    const result = checkLinks();
+    const check = $("check");
+    check.textContent = result.msg;
+    check.className = "check " + (result.ok ? "ok" : "bad");
+    const symbols = result.recips ? symbolsFor(result.recips) : [];
     const list = $("resultList");
     list.textContent = "";
     state.draw.forEach((d, i) => {
       const tag = el("span", { class: "sent", text: d.sent ? "✓ Sent" : "" });
+      const right = el("span", { class: "right" }, [tag]);
+      if (symbols[i]) right.appendChild(el("span", { class: "tag", title: "Stands for who they're buying for", text: symbols[i] }));
       const row = el("div", { class: "result" }, [
-        el("div", { class: "name" }, [el("span", { text: d.name }), tag])
+        el("div", { class: "name" }, [el("span", { text: d.name }), right])
       ]);
       const actions = el("div", { class: "actions" });
       const text = "Hi " + d.name + "! Here's your Secret Santa link. Open it somewhere private: " + d.link;
